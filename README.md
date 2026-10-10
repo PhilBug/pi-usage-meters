@@ -1,6 +1,6 @@
 # pi-usage-meters
 
-This fork of [Quigleybits/pi-usage-meters](https://github.com/Quigleybits/pi-usage-meters) adds monthly Codex Enterprise credit usage and Copilot AI credit counts for unlimited seats. It keeps the on-demand `/usage` command without background polling or a persistent footer.
+This fork of [Quigleybits/pi-usage-meters](https://github.com/Quigleybits/pi-usage-meters) shows Codex Enterprise and Copilot AI credit consumption in USD. It keeps the on-demand `/usage` command without background polling or a persistent footer.
 
 A [pi](https://pi.dev) coding agent extension that adds a `/usage` command showing **subscription quota for every provider you're connected to** — one compact, colour-coded block instead of a dashboard per provider. Claude, Codex, Kimi, Grok, and GitHub Copilot authenticate via pi's OAuth; the GLM and MiniMax plans use the API keys pi already holds (`ZAI_API_KEY` / `ZAI_CODING_CN_API_KEY`, `MINIMAX_API_KEY` / `MINIMAX_CN_API_KEY`). Pay-as-you-go balances (DeepSeek, MiniMax `sk-api-` keys) are out of scope by design: this meters plans, not prepaid money.
 
@@ -23,6 +23,20 @@ pi -e git:github.com/PhilBug/pi-usage-meters
 Then run `/usage` in any pi session. Results are cached in memory for 60 seconds; use `/usage --refresh` to bypass the cache. No extension-specific configuration is needed — OAuth credentials come from pi's own auth store (`/login`) and refresh automatically. The GLM meter resolves either `zai` / `ZAI_API_KEY` or `zai-coding-cn` / `ZAI_CODING_CN_API_KEY` from the same auth registry; if both are configured, the existing global `zai` provider takes precedence.
 
 Only providers you are connected to get a block. Everything else collapses into one dim footer line — `not connected: Codex · Kimi`, `Claude: login expired (/login anthropic)`, `Kimi: no credits left — plan used up or expired`, `Codex: timed out` — so an account you do not have never shows up as an error. `/usage --all` lists the per-provider login hints as blocks instead. Footer lines are plain words; the HTTP status or error code behind each one is kept in the entry's hidden `debug` field (visible in the session file), never on screen.
+
+## USD display
+
+- Claude Enterprise returns monthly spending in its account currency. USD accounts need no conversion. This extension does not convert foreign currencies.
+- Copilot AI credits convert at **1 credit = USD 0.01**, as documented in [GitHub Copilot billing](https://docs.github.com/en/billing/concepts/product-billing/github-copilot-billing). This is the value of consumption, not necessarily an additional invoice charge.
+- Codex Enterprise uses an **estimated USD 0.04 per credit** by default. [OpenAI says credit prices depend on the plan or agreement](https://learn.chatgpt.com/docs/pricing#credits-overview), so this is not a verified contract rate. The row is labelled `Monthly spend (est.)`. Set `PI_USAGE_METERS_CODEX_USD_PER_CREDIT` before starting Pi to override the rate. An invalid rate produces `USD unavailable`.
+
+For example, start Pi with a different Codex estimate:
+
+```bash
+PI_USAGE_METERS_CODEX_USD_PER_CREDIT=0.02 pi
+```
+
+Codex monthly spending uses plain text instead of Unicode block bars. Legacy request quotas and other providers retain their existing units because they have no verified USD conversion here.
 
 ## Providers & endpoints
 
@@ -53,8 +67,8 @@ Only providers you are connected to get a block. Everything else collapses into 
 - These quota endpoints are **undocumented** and may change without notice; each provider fetch is isolated and fails soft.
 - A provider that stalls is cut off after 8 s — one budget per provider, optional follow-up calls included — and reported as `timed out` in the footer line; the other meters still render. Other failures read `rate limited — try again shortly`, `no credits left — plan used up or expired` (HTTP 402, or 429 with an exhausted/quota code — Kimi answers this way once a plan's credits are gone), `access denied`, `endpoint changed — update the extension`, `provider error — try again later`, `network error`. A connected account with no quota windows (no active plan) shows as `no plan data`.
 - MiniMax's `*_usage_count` fields historically meant *remaining*; when the payload carries `*_remaining_percent` the meter uses it to pick the right reading (mirroring the official MiniMax CLI), and a weekly boost (`weekly_boost_permille`) is applied the same way. Models flagged "not in plan" are skipped; the shared `general` bucket is the primary meter and a window the server flags as exhausted (`status` 2) renders as 100% used even if its percent is stale. The API reports auth failures in-band (HTTP 200 with `status_code` 1004 or 2049), which the meter maps to `API key rejected`.
-- Copilot: `quota_snapshots.premium_interactions` drives the meter (`percent_remaining` → used, with `entitlement`/`remaining` counts and any overage); unlimited chat and completions snapshots are skipped. Unlimited premium snapshots show their `credits_used` count without a percentage or invented allowance. If that count is missing or invalid, the premium quota reads `unlimited`. Credits are not USD, and the same pool is not summed across snapshot keys. Copilot Free renders `monthly_quotas` against `limited_user_quotas`. A lapsed subscription (`subscription_ended`) carries no snapshots and shows as `no plan data`. The month pie assumes a 30-day window ending on `quota_reset_date`.
-- Codex Enterprise: `spend_control.individual_limit` supplies the monthly credit meter, used/limit counts, and reset countdown. Credits are not USD. Missing or invalid amounts produce no credit meter, not zero usage. The meter does not assume a fixed period length for the reset pie.
+- Copilot: `quota_snapshots.premium_interactions` drives the meter (`percent_remaining` → used, with `entitlement`/`remaining` counts and any overage); unlimited chat and completions snapshots are skipped. Premium snapshots with valid `credits_used` show its USD value without a percentage or invented allowance, whether the quota is marked unlimited or metered. Unlimited premium snapshots without a valid count show `USD unavailable`. The same pool is not summed across snapshot keys. Copilot Free renders `monthly_quotas` against `limited_user_quotas`. A lapsed subscription (`subscription_ended`) carries no snapshots and shows as `no plan data`. The month pie assumes a 30-day window ending on `quota_reset_date`.
+- Codex Enterprise: `spend_control.individual_limit` supplies monthly consumption, the individual limit, and reset time. Used/limit amounts are converted to estimated USD with two decimal places. The row also shows a textual percentage and reset countdown. Missing or invalid amounts produce no spend row, not zero usage.
 - Claude Enterprise monthly spending appears as `Extra usage`, in the currency returned by the provider. These figures describe the authenticated user's allowance, not the company's total bill.
 - Codex banked-reset lookup currently sends `OpenAI-Beta: codex-1` and `originator: Codex Desktop`, matching the existing Codex client endpoint contract. Review this compatibility choice if OpenAI publishes an official replacement.
 - Grok SuperGrok usage is the shared weekly credit pool (`creditUsagePercent`), with optional per-product split (Build/Chat/Imagine). Legacy monthly credit totals remain as a fallback if the weekly payload is absent.

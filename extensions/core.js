@@ -335,7 +335,10 @@ export async function fetchAnthropic(ctx) {
   return lines;
 }
 
-export async function fetchCodex(ctx, { clock = Date.now } = {}) {
+export async function fetchCodex(ctx, {
+  clock = Date.now,
+  codexUsdPerCredit = process.env.PI_USAGE_METERS_CODEX_USD_PER_CREDIT ?? 0.04,
+} = {}) {
   const token = await tokenFor(ctx, "openai-codex");
   if (!token) throw noAuth("openai-codex");
   const deadline = clock() + TIMEOUT_MS; // one budget for the whole provider, follow-up calls included
@@ -353,9 +356,17 @@ export async function fetchCodex(ctx, { clock = Date.now } = {}) {
     (typeof value === "number" || (typeof value === "string" && value.trim() !== ""))
     && Number.isFinite(Number(value)));
   if (spend?.unit === "credit" && validAmounts && Number(spend.used) >= 0 && Number(spend.limit) > 0) {
-    const resetMs = spend.reset_at == null ? NaN : Number(spend.reset_at) * 1000;
-    lines.push(line("Month (credits)", pct(spend.used, spend.limit), resetMs));
-    lines.push(plain("Credits", `${spend.used}/${spend.limit} used`));
+    const rate = Number(codexUsdPerCredit);
+    const usedUsd = Number(spend.used) * rate;
+    const limitUsd = Number(spend.limit) * rate;
+    if (rate > 0 && Number.isFinite(usedUsd) && Number.isFinite(limitUsd)) {
+      const resetMs = spend.reset_at == null ? NaN : Number(spend.reset_at) * 1000;
+      const reset = Number.isFinite(resetMs) ? ` · reset ${fmtReset(resetMs)}` : "";
+      lines.push(plain("Monthly spend (est.)",
+        `USD ${usedUsd.toFixed(2)}/${limitUsd.toFixed(2)} used · ${Math.round(pct(spend.used, spend.limit))}%${reset}`));
+    } else {
+      lines.push(plain("Monthly spend (est.)", "USD unavailable (invalid conversion rate)"));
+    }
   }
   const banked = Math.max(0, Math.trunc(Number(usage.rate_limit_reset_credits?.available_count) || 0));
   if (banked > 0) {
@@ -687,17 +698,19 @@ export async function fetchCopilot(ctx, { readCredential = readPiCredential } = 
   for (const [key, label] of [["premium_interactions", "Premium requests"], ["chat", "Chat"], ["completions", "Completions"]]) {
     const snap = snapshots?.[key];
     if (!snap || typeof snap !== "object") continue;
-    if (snap.unlimited === true) {
-      if (key === "premium_interactions") {
-        const credits = snap.credits_used;
-        const validCredits = (typeof credits === "number" || (typeof credits === "string" && credits.trim() !== ""))
-          && Number.isFinite(Number(credits)) && Number(credits) >= 0;
-        lines.push(validCredits
-          ? plain("Month (AI credits)", `${Number(credits).toLocaleString()} used (no limit reported)`)
-          : plain(label, "unlimited"));
+    if (key === "premium_interactions") {
+      const credits = snap.credits_used;
+      const validCredits = (typeof credits === "number" || (typeof credits === "string" && credits.trim() !== ""))
+        && Number.isFinite(Number(credits)) && Number(credits) >= 0;
+      if (validCredits) {
+        lines.push(plain("Monthly spend", `USD ${(Number(credits) / 100).toFixed(2)} used (no limit reported)`));
+        continue;
       }
-      continue;
+      if (snap.unlimited === true) {
+        lines.push(plain("Monthly spend", "USD unavailable (consumption not reported)"));
+      }
     }
+    if (snap.unlimited === true) continue;
     const entitlement = Number(snap.entitlement);
     const remaining = Number(snap.remaining ?? snap.quota_remaining);
     const percentRemaining = Number(snap.percent_remaining);

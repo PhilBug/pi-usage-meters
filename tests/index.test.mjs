@@ -170,7 +170,7 @@ test("Claude Enterprise uses structured monthly spend rather than legacy credits
   });
 });
 
-test("Codex Enterprise reports monthly credits without rolling rate limits", async () => {
+test("Codex Enterprise renders estimated monthly USD without a Unicode quota bar", async () => {
   const resetAt = Math.floor(Date.now() / 1000) + 86400;
   await withFetch(async (url, init) => {
     assert.equal(String(url), "https://chatgpt.com/backend-api/wham/usage");
@@ -185,27 +185,42 @@ test("Codex Enterprise reports monthly credits without rolling rate limits", asy
       } },
     });
   }, async () => {
-    const data = await createUsageLoader()(authContext({ "openai-codex": oauth(jwt()) }));
+    const data = await createUsageLoader({ codexUsdPerCredit: 0.04 })(authContext({ "openai-codex": oauth(jwt()) }));
     const block = data.blocks.find((entry) => entry.name === "Codex");
     assert.equal(block.status, undefined);
-    assert.match(block.lines[1], /Month \(credits\).*25%.*reset/);
-    assert.match(block.lines[2], /Credits\s+125\.5\/500 used/);
-    assert.doesNotMatch(block.lines.join("\n"), /Session|Week|USD/);
-    assert.match(renderContent(data), /125\.5\/500 used/);
+    assert.equal(block.lines.length, 2);
+    assert.match(block.lines[1], /Monthly spend \(est\.\).*USD 5\.02\/20\.00 used.*25%.*reset/);
+    assert.doesNotMatch(block.lines.join("\n"), /Session|Week|credits|[█░]/i);
+    assert.match(renderContent(data), /USD 5\.02\/20\.00 used/);
   });
 });
 
 test("Codex monthly credits handle zero usage and overage without inventing a reset", async () => {
-  for (const [used, expectedPct] of [["0", "0%"], ["125", "100%"]]) {
+  for (const [used, expectedPct, expectedUsd] of [["0", "0%", "0.00"], ["125", "100%", "5.00"]]) {
     await withFetch(async () => json({
       spend_control: { individual_limit: { unit: "credit", used, limit: "100" } },
     }), async () => {
-      const lines = await fetchCodex(authContext({ "openai-codex": oauth(jwt()) }));
+      const lines = await fetchCodex(authContext({ "openai-codex": oauth(jwt()) }), { codexUsdPerCredit: 0.04 });
       assert.ok(lines[1].includes(expectedPct));
-      assert.match(lines[2], new RegExp(`${used}/100 used`));
+      assert.ok(lines[1].includes(`USD ${expectedUsd}/4.00 used`));
       assert.doesNotMatch(lines.join("\n"), /reset/);
     });
   }
+});
+
+test("Codex USD conversion matches the screenshot and supports a configured rate", async () => {
+  await withFetch(async () => json({
+    spend_control: { individual_limit: { unit: "credit", used: "1225.7111070156097", limit: "75000" } },
+  }), async () => {
+    const ctx = authContext({ "openai-codex": oauth(jwt()) });
+    assert.match((await fetchCodex(ctx, { codexUsdPerCredit: 0.04 }))[1], /USD 49\.03\/3000\.00/);
+    assert.match((await fetchCodex(ctx, { codexUsdPerCredit: 0.02 }))[1], /USD 24\.51\/1500\.00/);
+    for (const codexUsdPerCredit of ["", "bad", 0, -1, Infinity, 1e308]) {
+      const lines = await fetchCodex(ctx, { codexUsdPerCredit });
+      assert.match(lines[1], /USD unavailable/);
+      assert.doesNotMatch(lines.join("\n"), /credits|NaN|Infinity|[█░]/i);
+    }
+  });
 });
 
 test("Codex skips missing or invalid monthly credit figures", async () => {
@@ -857,12 +872,12 @@ test("Copilot reads the GitHub token through the injected credential reader and 
   });
 });
 
-test("Copilot Business reports monthly AI credits when quota snapshots are unlimited", async () => {
-  for (const credits_used of [12345, 0]) {
+test("Copilot Business converts monthly AI credits to USD without inferring a limit", async () => {
+  for (const [credits_used, unlimited] of [[12345, true], [46825, true], [0, true], [12345, false]]) {
     await withFetch(async () => json({
       copilot_plan: "business",
       quota_snapshots: {
-        premium_interactions: { unlimited: true, credits_used, entitlement: 0, remaining: 0, percent_remaining: 100 },
+        premium_interactions: { unlimited, credits_used, entitlement: 0, remaining: 0, percent_remaining: 100 },
         chat: { unlimited: true, credits_used },
         completions: { unlimited: true, credits_used },
       },
@@ -872,9 +887,9 @@ test("Copilot Business reports monthly AI credits when quota snapshots are unlim
       assert.equal(block.status, undefined);
       assert.equal(block.lines.length, 2);
       assert.equal(block.lines[0], "Copilot (Business)");
-      assert.match(block.lines[1], /Month \(AI credits\)/);
-      assert.ok(block.lines[1].includes(`${credits_used.toLocaleString()} used (no limit reported)`));
-      assert.doesNotMatch(block.lines[1], /%|█|USD/);
+      assert.match(block.lines[1], /Monthly spend/);
+      assert.ok(block.lines[1].includes(`USD ${(credits_used / 100).toFixed(2)} used (no limit reported)`));
+      assert.doesNotMatch(block.lines[1], /%|[█░]|credits/i);
     });
   }
 });
@@ -885,8 +900,8 @@ test("Copilot unlimited premium quota without valid credits is not shown as no p
       quota_snapshots: { premium_interactions: { unlimited: true, credits_used } },
     }), async () => {
       const lines = await fetchCopilot(copilotCtx, { readCredential: async () => copilotCredential() });
-      assert.match(lines[1], /Premium requests\s+unlimited$/);
-      assert.doesNotMatch(lines[1], /%|credits|0 used/);
+      assert.match(lines[1], /Monthly spend\s+USD unavailable/);
+      assert.doesNotMatch(lines[1], /%|[█░]|0 used/);
     });
   }
 });
