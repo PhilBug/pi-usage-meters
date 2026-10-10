@@ -824,6 +824,36 @@ export function createUsageLoader(deps = {}) {
 
 const dim = (text) => `${STAMP}${clean(text, MAX_RENDER_LINE)}${RESET}`;
 
+function monthlyUsdTotal(blocks) {
+  let cents = 0;
+  let included = 0;
+  let estimated = false;
+  const missing = [];
+  // Sum the displayed USD cents so the total matches the rounded provider rows.
+  const spendRow = /^\s*(?:Extra usage|Monthly spend(?: \(est\.\))?)\s+(?:disabled \()?USD (\d+\.\d{2})(?=[/\s])/;
+  for (const name of ["Claude", "Codex", "Copilot"]) {
+    const block = blocks.find((entry) => entry?.name === name);
+    const lines = Array.isArray(block?.lines) ? block.lines.slice(1, 20) : [];
+    const match = lines.map((value) => typeof value === "string" ? value.match(spendRow) : null).find(Boolean);
+    const amount = match ? Math.round(Number(match[1]) * 100) : NaN;
+    if (!Number.isSafeInteger(amount)) {
+      missing.push(name);
+      continue;
+    }
+    cents += amount;
+    included++;
+    if (name === "Codex") estimated = true;
+  }
+  if (!included) return undefined;
+  if (!Number.isSafeInteger(cents)) return plain("Total", "USD unavailable (amount too large)");
+  const qualifiers = [];
+  if (estimated) qualifiers.push("est.");
+  if (missing.length) qualifiers.push("partial");
+  const label = qualifiers.length ? `Total (${qualifiers.join(", ")})` : "Total";
+  const excluded = missing.length ? ` · excludes ${missing.join(", ")}` : "";
+  return plain(label, `USD ${(cents / 100).toFixed(2)}${excluded}`);
+}
+
 export function renderContent(data) {
   const showAll = data?.all === true;
   const out = [];
@@ -850,14 +880,13 @@ export function renderContent(data) {
       notes.push(`${name}: ${clean(block?.detail, 80) || "usage unavailable"}`);
     }
   }
-  // Actionable notes (expired logins, errors) come first; the not-connected summary closes the footer.
-  if (unconnected.length && (out.length || notes.length)) {
-    notes.push(`not connected: ${unconnected.map((entry) => entry.name).join(" · ")}`);
-  } else if (unconnected.length) {
+  if (unconnected.length && !out.length && !notes.length) {
     notes.push(`no providers connected — ${unconnected.map((entry) => `${entry.name}: ${entry.hint}`).join(" · ")}`);
   }
   out.push(...notes.map(dim));
   const fetched = new Date(data?.fetchedAt);
   if (Number.isFinite(fetched.getTime())) out.push(dim(`fetched ${fetched.toLocaleTimeString()}`));
+  const total = monthlyUsdTotal(Array.isArray(data?.blocks) ? data.blocks : []);
+  if (total) out.push(`${total}${RESET}`);
   return out.join("\n");
 }

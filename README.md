@@ -22,7 +22,7 @@ pi -e git:github.com/PhilBug/pi-usage-meters
 
 Then run `/usage` in any pi session. Results are cached in memory for 60 seconds; use `/usage --refresh` to bypass the cache. No extension-specific configuration is needed — OAuth credentials come from pi's own auth store (`/login`) and refresh automatically. The GLM meter resolves either `zai` / `ZAI_API_KEY` or `zai-coding-cn` / `ZAI_CODING_CN_API_KEY` from the same auth registry; if both are configured, the existing global `zai` provider takes precedence.
 
-Only providers you are connected to get a block. Everything else collapses into one dim footer line — `not connected: Codex · Kimi`, `Claude: login expired (/login anthropic)`, `Kimi: no credits left — plan used up or expired`, `Codex: timed out` — so an account you do not have never shows up as an error. `/usage --all` lists the per-provider login hints as blocks instead. Footer lines are plain words; the HTTP status or error code behind each one is kept in the entry's hidden `debug` field (visible in the session file), never on screen.
+Only connected providers get a block. Disconnected providers are hidden unless you pass `/usage --all`, which lists their login hints. If nothing is connected, a single login hint remains visible. Errors such as `Claude: login expired (/login anthropic)` and `Codex: timed out` stay visible. The HTTP status or error code is kept in the entry's hidden `debug` field in the session file, never on screen.
 
 ## USD display
 
@@ -36,7 +36,7 @@ For example, start Pi with a different Codex estimate:
 PI_USAGE_METERS_CODEX_USD_PER_CREDIT=0.02 pi
 ```
 
-Codex monthly spending uses plain text instead of Unicode block bars. Legacy request quotas and other providers retain their existing units because they have no verified USD conversion here.
+Codex monthly spending uses plain text instead of Unicode block bars. The last line sums the displayed USD amounts from Claude, Codex and Copilot. The total is marked `est.` when it includes Codex, and `partial` with the excluded provider names if any USD amount is unavailable. Other providers are not included in this total. Legacy request quotas and other providers retain their existing units because they have no verified USD conversion here.
 
 ## Providers & endpoints
 

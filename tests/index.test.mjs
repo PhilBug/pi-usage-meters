@@ -541,7 +541,7 @@ test("Codex block uses the terminal's default foreground", () => {
   assert.match(renderContent({ blocks: [{ name: "Claude", lines: ["Claude"] }] }), /38;2;215;119;87/);
 });
 
-test("unconnected and failing providers collapse into dim footer lines", () => {
+test("unconnected providers are hidden and failing providers remain visible", () => {
   const data = {
     blocks: [
       { name: "Claude", lines: ["Claude (Max x5)", "  Session (5h)   ████░░░░░░  42%"] },
@@ -553,13 +553,13 @@ test("unconnected and failing providers collapse into dim footer lines", () => {
     fetchedAt: "2026-01-01T00:00:00Z",
   };
   const lines = renderContent(data).split("\n");
-  assert.equal(lines.length, 6);
+  assert.equal(lines.length, 5);
   assert.match(lines[0], /Claude \(Max x5\)/);
   assert.match(lines[2], /Grok: no plan data/);
   assert.match(lines[3], /GLM: timed out\x1b\[0m$/);
-  assert.match(lines[4], /not connected: Codex · Kimi/);
+  assert.doesNotMatch(renderContent(data), /not connected: /);
   assert.doesNotMatch(renderContent(data), /8000ms/); // debug fields are persisted, never rendered
-  assert.match(lines[5], /fetched/);
+  assert.match(lines[4], /fetched/);
   for (const footer of lines.slice(2)) assert.ok(footer.startsWith(STAMP), `dim footer: ${footer}`);
   assert.doesNotMatch(renderContent(data), /not logged in|API key not set/);
 
@@ -567,6 +567,52 @@ test("unconnected and failing providers collapse into dim footer lines", () => {
   assert.match(all, /Codex.*\n.*not connected \(\/login openai-codex\)/);
   assert.match(all, /Kimi.*\n.*not connected \(\/login kimi-coding\)/);
   assert.doesNotMatch(all, /not connected: /);
+});
+
+test("monthly USD total sums only Claude, Codex and Copilot and comes last", () => {
+  const data = {
+    blocks: [
+      { name: "Claude", lines: ["Claude", "  Extra usage            USD 10.10/3000.00"] },
+      { name: "Codex", lines: ["Codex", "  Monthly spend (est.)    USD 20.20/3000.00 used · 1%"] },
+      { name: "Copilot", lines: ["Copilot", "  Monthly spend          USD 30.30 used (no limit reported)"] },
+      { name: "Grok", lines: ["Grok", "  Monthly spend          USD 999.00 used"] },
+      { name: "Kimi", status: "unconnected" },
+    ],
+    fetchedAt: "2026-01-01T00:00:00Z",
+  };
+  const rendered = renderContent(data);
+  assert.doesNotMatch(rendered, /not connected: /);
+  assert.match(rendered.split("\n").at(-1), /Total \(est\.\)\s+USD 60\.60/);
+  assert.match(renderContent({ ...data, all: true }), /not connected/);
+});
+
+test("monthly USD total marks missing accounts instead of treating them as zero", () => {
+  const data = { blocks: [
+    { name: "Claude", lines: ["Claude", "  Extra usage            USD 1.01/100.00"] },
+    { name: "Codex", status: "error", detail: "timed out" },
+    { name: "Copilot", lines: ["Copilot", "  Monthly spend          USD unavailable"] },
+  ] };
+  const last = renderContent(data).split("\n").at(-1);
+  assert.match(last, /Total \(partial\)\s+USD 1\.01/);
+  assert.match(last, /excludes Codex, Copilot/);
+  assert.doesNotMatch(renderContent({ blocks: [] }), /Total/);
+});
+
+test("monthly USD total handles zero, disabled spend and unsupported or invalid values", () => {
+  const zero = { blocks: [
+    { name: "Claude", lines: ["Claude", "  Extra usage            disabled (USD 0.00/100.00 spent)"] },
+    { name: "Codex", lines: ["Codex", "  Monthly spend (est.)    USD 0.00/100.00 used"] },
+    { name: "Copilot", lines: ["Copilot", "  Monthly spend          USD 0.00 used"] },
+  ] };
+  assert.match(renderContent(zero).split("\n").at(-1), /Total \(est\.\)\s+USD 0\.00/);
+  for (const invalid of ["JPY 100/200", "USD NaN/100.00", "USD 999999999999999999.00 used", "USD 9.99oops", "USD -1.00 used"]) {
+    const data = { blocks: [
+      zero.blocks[0],
+      { name: "Codex", lines: ["Codex", `  Monthly spend (est.)    ${invalid}`] },
+      zero.blocks[2],
+    ] };
+    assert.match(renderContent(data).split("\n").at(-1), /Total \(partial\)\s+USD 0\.00 · excludes Codex/);
+  }
 });
 
 test("nothing connected renders a single hint line", () => {
@@ -596,7 +642,7 @@ test("loader marks header-only providers as no plan data and missing logins as u
     assert.match(glm.hint, /ZAI_API_KEY/);
     assert.doesNotMatch(JSON.stringify(data), /not logged in|API key not set/);
     assert.match(renderContent(data), /Claude: no plan data/);
-    assert.match(renderContent(data), /not connected: Codex · Kimi · Grok · Copilot · GLM · MiniMax\x1b/);
+    assert.doesNotMatch(renderContent(data), /not connected: /);
   });
 });
 
