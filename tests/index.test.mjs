@@ -153,6 +153,80 @@ test("Claude money honours currency exponent", async () => {
   });
 });
 
+test("Claude Enterprise uses structured monthly spend rather than legacy credits", async () => {
+  await withFetch(async (url) => json(String(url).endsWith("/profile") ? {} : {
+    five_hour: null,
+    seven_day: null,
+    extra_usage: { credits_ever_enabled: true, is_enabled: true, used_credits: 1, monthly_limit: 2 },
+    spend: {
+      used: { amount_minor: 12345, currency: "USD", exponent: 2 },
+      limit: { amount_minor: 50000, currency: "USD", exponent: 2 },
+    },
+  }), async () => {
+    const lines = await fetchAnthropic(authContext({ anthropic: oauth() }));
+    assert.equal(lines.length, 2);
+    assert.match(lines[1], /Extra usage\s+USD 123\.45\/500\.00/);
+    assert.doesNotMatch(lines.join("\n"), /Session|Week/);
+  });
+});
+
+test("Codex Enterprise reports monthly credits without rolling rate limits", async () => {
+  const resetAt = Math.floor(Date.now() / 1000) + 86400;
+  await withFetch(async (url, init) => {
+    assert.equal(String(url), "https://chatgpt.com/backend-api/wham/usage");
+    assert.equal(init.headers["ChatGPT-Account-Id"], "account-123");
+    return json({
+      plan_type: "enterprise_cbp_usage_based",
+      rate_limit: null,
+      spend_control: { individual_limit: {
+        source: "workspace_spend_controls", unit: "credit",
+        used: "125.5", limit: "500", remaining: "374.5", used_percent: 25,
+        reset_at: resetAt,
+      } },
+    });
+  }, async () => {
+    const data = await createUsageLoader()(authContext({ "openai-codex": oauth(jwt()) }));
+    const block = data.blocks.find((entry) => entry.name === "Codex");
+    assert.equal(block.status, undefined);
+    assert.match(block.lines[1], /Month \(credits\).*25%.*reset/);
+    assert.match(block.lines[2], /Credits\s+125\.5\/500 used/);
+    assert.doesNotMatch(block.lines.join("\n"), /Session|Week|USD/);
+    assert.match(renderContent(data), /125\.5\/500 used/);
+  });
+});
+
+test("Codex monthly credits handle zero usage and overage without inventing a reset", async () => {
+  for (const [used, expectedPct] of [["0", "0%"], ["125", "100%"]]) {
+    await withFetch(async () => json({
+      spend_control: { individual_limit: { unit: "credit", used, limit: "100" } },
+    }), async () => {
+      const lines = await fetchCodex(authContext({ "openai-codex": oauth(jwt()) }));
+      assert.ok(lines[1].includes(expectedPct));
+      assert.match(lines[2], new RegExp(`${used}/100 used`));
+      assert.doesNotMatch(lines.join("\n"), /reset/);
+    });
+  }
+});
+
+test("Codex skips missing or invalid monthly credit figures", async () => {
+  for (const individual_limit of [
+    null,
+    {},
+    { unit: "credit", used: null, limit: "100" },
+    { unit: "credit", used: "", limit: "100" },
+    { unit: "credit", used: "10", limit: null },
+    { unit: "credit", used: "10", limit: "0" },
+    { unit: "credit", used: "-1", limit: "100" },
+    { unit: "credit", used: "Infinity", limit: "100" },
+    { unit: "credit", used: "10\u001b[31m", limit: "100" },
+    { unit: "usd", used: "10", limit: "100" },
+  ]) {
+    await withFetch(async () => json({ spend_control: { individual_limit } }), async () => {
+      assert.deepEqual(await fetchCodex(authContext({ "openai-codex": oauth(jwt()) })), ["Codex"]);
+    });
+  }
+});
+
 test("Codex derives window labels, omits absent plan, and keeps one expiry per reset", async () => {
   const token = jwt();
   const ctx = authContext({ "openai-codex": oauth(token) });
@@ -781,6 +855,40 @@ test("Copilot reads the GitHub token through the injected credential reader and 
     assert.equal(lines[0], "Copilot (Enterprise)");
     assert.match(lines[1], /Premium requests.*90%.*900\/1,000 \(\+12 overage\)$/);
   });
+});
+
+test("Copilot Business reports monthly AI credits when quota snapshots are unlimited", async () => {
+  for (const credits_used of [12345, 0]) {
+    await withFetch(async () => json({
+      copilot_plan: "business",
+      quota_snapshots: {
+        premium_interactions: { unlimited: true, credits_used, entitlement: 0, remaining: 0, percent_remaining: 100 },
+        chat: { unlimited: true, credits_used },
+        completions: { unlimited: true, credits_used },
+      },
+    }), async () => {
+      const data = await createUsageLoader({ readCredential: async () => copilotCredential() })(copilotCtx);
+      const block = data.blocks.find((entry) => entry.name === "Copilot");
+      assert.equal(block.status, undefined);
+      assert.equal(block.lines.length, 2);
+      assert.equal(block.lines[0], "Copilot (Business)");
+      assert.match(block.lines[1], /Month \(AI credits\)/);
+      assert.ok(block.lines[1].includes(`${credits_used.toLocaleString()} used (no limit reported)`));
+      assert.doesNotMatch(block.lines[1], /%|█|USD/);
+    });
+  }
+});
+
+test("Copilot unlimited premium quota without valid credits is not shown as no plan data", async () => {
+  for (const credits_used of [undefined, null, "", -1, "NaN", true]) {
+    await withFetch(async () => json({
+      quota_snapshots: { premium_interactions: { unlimited: true, credits_used } },
+    }), async () => {
+      const lines = await fetchCopilot(copilotCtx, { readCredential: async () => copilotCredential() });
+      assert.match(lines[1], /Premium requests\s+unlimited$/);
+      assert.doesNotMatch(lines[1], /%|credits|0 used/);
+    });
+  }
 });
 
 test("Copilot Free tier, lapsed subscriptions, and the loader's status mapping", async () => {

@@ -348,6 +348,15 @@ export async function fetchCodex(ctx, { clock = Date.now } = {}) {
     const seconds = Number(window.limit_window_seconds) || 0;
     lines.push(line(windowLabel(seconds * 1000), window.used_percent, Number(window.reset_at) * 1000, seconds * 1000));
   }
+  const spend = usage.spend_control?.individual_limit;
+  const validAmounts = [spend?.used, spend?.limit].every((value) =>
+    (typeof value === "number" || (typeof value === "string" && value.trim() !== ""))
+    && Number.isFinite(Number(value)));
+  if (spend?.unit === "credit" && validAmounts && Number(spend.used) >= 0 && Number(spend.limit) > 0) {
+    const resetMs = spend.reset_at == null ? NaN : Number(spend.reset_at) * 1000;
+    lines.push(line("Month (credits)", pct(spend.used, spend.limit), resetMs));
+    lines.push(plain("Credits", `${spend.used}/${spend.limit} used`));
+  }
   const banked = Math.max(0, Math.trunc(Number(usage.rate_limit_reset_credits?.available_count) || 0));
   if (banked > 0) {
     const visible = Math.min(20, banked);
@@ -677,7 +686,18 @@ export async function fetchCopilot(ctx, { readCredential = readPiCredential } = 
   const snapshots = user?.quota_snapshots && typeof user.quota_snapshots === "object" ? user.quota_snapshots : undefined;
   for (const [key, label] of [["premium_interactions", "Premium requests"], ["chat", "Chat"], ["completions", "Completions"]]) {
     const snap = snapshots?.[key];
-    if (!snap || typeof snap !== "object" || snap.unlimited === true) continue;
+    if (!snap || typeof snap !== "object") continue;
+    if (snap.unlimited === true) {
+      if (key === "premium_interactions") {
+        const credits = snap.credits_used;
+        const validCredits = (typeof credits === "number" || (typeof credits === "string" && credits.trim() !== ""))
+          && Number.isFinite(Number(credits)) && Number(credits) >= 0;
+        lines.push(validCredits
+          ? plain("Month (AI credits)", `${Number(credits).toLocaleString()} used (no limit reported)`)
+          : plain(label, "unlimited"));
+      }
+      continue;
+    }
     const entitlement = Number(snap.entitlement);
     const remaining = Number(snap.remaining ?? snap.quota_remaining);
     const percentRemaining = Number(snap.percent_remaining);
